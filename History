@@ -1,0 +1,152 @@
+import React, { useState } from "react";
+import { base44 } from "@/api/base44Client";
+import { useQuery } from "@tanstack/react-query";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Search, Filter, Download, History as HistoryIcon } from "lucide-react";
+import { format } from "date-fns";
+
+import DetectionTable from "../components/history/DetectionTable";
+
+export default function History() {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterZone, setFilterZone] = useState("all");
+  const [filterUnauthorized, setFilterUnauthorized] = useState("all");
+
+  const { data: detections, isLoading } = useQuery({
+    queryKey: ['detections'],
+    queryFn: () => base44.entities.Detection.list('-detection_time'),
+    initialData: [],
+  });
+
+  const { data: zones } = useQuery({
+    queryKey: ['zones'],
+    queryFn: () => base44.entities.Zone.list(),
+    initialData: [],
+  });
+
+  const filteredDetections = detections.filter(detection => {
+    const matchesSearch = 
+      detection.device_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      detection.mac_address?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      detection.zone_name?.toLowerCase().includes(searchTerm.toLowerCase());
+
+    const matchesZone = filterZone === "all" || detection.zone_id === filterZone;
+    
+    const matchesUnauthorized = 
+      filterUnauthorized === "all" ||
+      (filterUnauthorized === "unauthorized" && detection.is_unauthorized) ||
+      (filterUnauthorized === "authorized" && !detection.is_unauthorized);
+
+    return matchesSearch && matchesZone && matchesUnauthorized;
+  });
+
+  const exportToCSV = () => {
+    const csvData = filteredDetections.map(d => ({
+      Date: format(new Date(d.detection_time), 'yyyy-MM-dd'),
+      Zone: d.zone_name,
+      Device: d.device_name,
+      'MAC Address': d.mac_address || 'N/A',
+      'Time Detected': format(new Date(d.detection_time), 'HH:mm:ss'),
+      'Signal Strength (dBm)': d.rssi || 'N/A',
+      Unauthorized: d.is_unauthorized ? 'Yes' : 'No'
+    }));
+
+    const headers = Object.keys(csvData[0] || {});
+    const csvContent = [
+      headers.join(','),
+      ...csvData.map(row => headers.map(header => `"${row[header]}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `detection_history_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6 md:p-8">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex items-center gap-3 mb-2">
+            <HistoryIcon className="w-8 h-8 text-blue-600" />
+            <h1 className="text-3xl font-bold text-slate-900">Detection History</h1>
+          </div>
+          <p className="text-slate-600">Complete log of all Bluetooth detections</p>
+        </div>
+
+        {/* Filters */}
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Filter className="w-5 h-5" />
+              Filters & Search
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid md:grid-cols-4 gap-4">
+              <div className="md:col-span-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Input
+                    placeholder="Search by device, MAC address, or zone..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
+              </div>
+              <Select value={filterZone} onValueChange={setFilterZone}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All Zones" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Zones</SelectItem>
+                  {zones.map((zone) => (
+                    <SelectItem key={zone.id} value={zone.id}>
+                      {zone.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterUnauthorized} onValueChange={setFilterUnauthorized}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All Access" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Access</SelectItem>
+                  <SelectItem value="unauthorized">Unauthorized Only</SelectItem>
+                  <SelectItem value="authorized">Authorized Only</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-between items-center mt-4">
+              <p className="text-sm text-slate-600">
+                Showing {filteredDetections.length} of {detections.length} detections
+              </p>
+              <Button
+                variant="outline"
+                onClick={exportToCSV}
+                disabled={filteredDetections.length === 0}
+                className="flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Export Filtered Results
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Detection Table */}
+        <DetectionTable detections={filteredDetections} isLoading={isLoading} />
+      </div>
+    </div>
+  );
+}
