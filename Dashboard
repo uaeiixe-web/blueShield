@@ -1,0 +1,152 @@
+import React, { useState, useEffect } from "react";
+import { base44 } from "@/api/base44Client";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import { createPageUrl } from "@/utils";
+import { Button } from "@/components/ui/button";
+import { Radio, Activity, MapPin, Download, Bell } from "lucide-react";
+import { format, formatDistanceToNow } from "date-fns";
+import { toast } from "sonner";
+
+import StatsOverview from "../components/dashboard/StatsOverview";
+import RecentDetections from "../components/dashboard/RecentDetections";
+import ActiveZones from "../components/dashboard/ActiveZones";
+import DetectionChart from "../components/dashboard/DetectionChart";
+import LiveAlerts from "../components/dashboard/LiveAlerts";
+
+export default function Dashboard() {
+  const [lastDetectionCount, setLastDetectionCount] = useState(0);
+
+  const { data: detections, isLoading: detectionsLoading } = useQuery({
+    queryKey: ['detections'],
+    queryFn: () => base44.entities.Detection.list('-detection_time'),
+    refetchInterval: 30000, // Increased to 30 seconds
+    initialData: [],
+  });
+
+  const { data: zones, isLoading: zonesLoading } = useQuery({
+    queryKey: ['zones'],
+    queryFn: () => base44.entities.Zone.list(),
+    initialData: [],
+  });
+
+  // Monitor for new detections and show alerts
+  useEffect(() => {
+    if (detections.length > lastDetectionCount && lastDetectionCount > 0) {
+      const newDetections = detections.slice(0, detections.length - lastDetectionCount);
+      newDetections.forEach(detection => {
+        toast.success("New Device Detected", {
+          description: `${detection.device_name} in ${detection.zone_name}`,
+          icon: <Bell className="text-blue-500" />,
+        });
+      });
+    }
+    setLastDetectionCount(detections.length);
+  }, [detections.length, lastDetectionCount]);
+
+  const exportToCSV = () => {
+    const csvData = detections.map(d => ({
+      Date: format(new Date(d.detection_time), 'yyyy-MM-dd'),
+      Zone: d.zone_name,
+      Device: d.device_name,
+      'MAC Address': d.mac_address || 'N/A',
+      'Time Detected': format(new Date(d.detection_time), 'HH:mm:ss'),
+      'Signal Strength (dBm)': d.rssi || 'N/A'
+    }));
+
+    const headers = Object.keys(csvData[0] || {});
+    const csvContent = [
+      headers.join(','),
+      ...csvData.map(row => headers.map(header => `"${row[header]}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `bluetooth_detections_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const recentDetections = detections.slice(0, 10);
+  const activeZones = zones.filter(z => z.is_active);
+  const todayDetections = detections.filter(d => {
+    const today = new Date();
+    const detectionDate = new Date(d.detection_time);
+    return detectionDate.toDateString() === today.toDateString();
+  });
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      <div className="p-6 md:p-8">
+        <div className="max-w-7xl mx-auto">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-slate-900 mb-2">Security Dashboard</h1>
+              <p className="text-slate-600">Real-time Bluetooth monitoring across restricted zones</p>
+            </div>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={exportToCSV}
+                disabled={detections.length === 0}
+                className="flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
+              </Button>
+              <Link to={createPageUrl("Scanner")}>
+                <Button className="bg-blue-600 hover:bg-blue-700 flex items-center gap-2">
+                  <Radio className="w-4 h-4" />
+                  Start Scanning
+                </Button>
+              </Link>
+            </div>
+          </div>
+
+          {/* Live Alerts - Show latest detections */}
+          {todayDetections.length > 0 && (
+            <LiveAlerts detections={todayDetections.slice(0, 3)} />
+          )}
+
+          {/* Stats Overview */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <StatsOverview 
+              title="Total Detections"
+              value={detections.length}
+              icon={Activity}
+              color="blue"
+              trend={`${todayDetections.length} today`}
+            />
+            <StatsOverview 
+              title="Active Zones"
+              value={activeZones.length}
+              icon={MapPin}
+              color="green"
+              trend={`${zones.length} total zones`}
+            />
+          </div>
+
+          {/* Main Content Grid */}
+          <div className="grid lg:grid-cols-3 gap-6 mb-8">
+            <div className="lg:col-span-2">
+              <RecentDetections 
+                detections={recentDetections}
+                isLoading={detectionsLoading}
+              />
+            </div>
+            <div>
+              <ActiveZones zones={activeZones} isLoading={zonesLoading} />
+            </div>
+          </div>
+
+          {/* Detection Chart */}
+          <DetectionChart detections={detections} />
+        </div>
+      </div>
+    </div>
+  );
+}
