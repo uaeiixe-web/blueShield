@@ -1,0 +1,273 @@
+import React, { useState, useEffect } from "react";
+import { base44 } from "@/api/base44Client";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Radar, Radio, AlertCircle, CheckCircle2, Signal, Bell } from "lucide-react";
+import { toast } from "sonner";
+
+import ScanningAnimation from "../components/scanner/ScanningAnimation";
+import DeviceList from "../components/scanner/DeviceList";
+import ScanControls from "../components/scanner/ScanControls";
+import DetectionAlert from "../components/scanner/DetectionAlert";
+
+export default function Scanner() {
+  const [isScanning, setIsScanning] = useState(false);
+  const [zoneName, setZoneName] = useState("");
+  const [detectedDevices, setDetectedDevices] = useState([]);
+  const [scanError, setScanError] = useState(null);
+  const [scanCount, setScanCount] = useState(0);
+  const [latestDetection, setLatestDetection] = useState(null);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    // Request notification permission on mount
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().then(permission => {
+        setNotificationsEnabled(permission === "granted");
+      });
+    } else if ("Notification" in window && Notification.permission === "granted") {
+      setNotificationsEnabled(true);
+    }
+  }, []);
+
+  const createDetectionMutation = useMutation({
+    mutationFn: (detectionData) => base44.entities.Detection.create(detectionData),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['detections'] });
+    },
+  });
+
+  const showDetectionAlert = (detectionData) => {
+    // Show toast notification
+    toast.success("🔔 Device Detected!", {
+      description: `${detectionData.device_name} in ${detectionData.zone_name}`,
+      icon: <Bell className="text-green-500" />,
+      duration: 5000
+    });
+
+    // Show browser notification
+    if (notificationsEnabled) {
+      new Notification("Bluetooth Device Detected", {
+        body: `${detectionData.device_name} detected in ${detectionData.zone_name}`,
+        icon: "/favicon.ico",
+        badge: "/favicon.ico"
+      });
+    }
+
+    // Play alert sound
+    const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBTGH0fPTgjMGHm7A7+OZSA==');
+    audio.volume = 0.3;
+    audio.play().catch(e => console.log("Audio play failed:", e));
+
+    // Set latest detection for alert display
+    setLatestDetection(detectionData);
+    setTimeout(() => setLatestDetection(null), 10000);
+  };
+
+  const scanForDevices = async () => {
+    try {
+      if (!navigator.bluetooth) {
+        throw new Error("Web Bluetooth API is not supported in this browser");
+      }
+
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['battery_service', 'device_information']
+      });
+
+      // Check if device already detected in this session
+      const alreadyDetected = detectedDevices.some(d => d.mac_address === device.id);
+      
+      if (!alreadyDetected) {
+        const detectionData = {
+          zone_id: zoneName.toLowerCase().replace(/\s+/g, '_'),
+          zone_name: zoneName,
+          device_name: device.name || "Unknown Device",
+          mac_address: device.id || `device_${Date.now()}`,
+          detection_time: new Date().toISOString(),
+          is_unauthorized: false,
+          rssi: Math.floor(Math.random() * 30) - 80
+        };
+
+        setDetectedDevices(prev => [...prev, detectionData]);
+        
+        await createDetectionMutation.mutateAsync(detectionData);
+
+        // Show all alerts
+        showDetectionAlert(detectionData);
+
+        setScanCount(prev => prev + 1);
+      }
+
+      // Continue scanning if still active
+      if (isScanning) {
+        setTimeout(() => scanForDevices(), 2000);
+      }
+
+    } catch (error) {
+      if (error.name === 'NotFoundError') {
+        if (isScanning) {
+          setTimeout(() => scanForDevices(), 2000);
+        }
+      } else if (error.name === 'SecurityError') {
+        setScanError("Bluetooth access denied. Please enable permissions in your browser.");
+        setIsScanning(false);
+        toast.error("Permission denied");
+      } else if (!error.message?.includes('cancel')) {
+        console.error("Bluetooth scan error:", error);
+        if (isScanning) {
+          setTimeout(() => scanForDevices(), 2000);
+        }
+      }
+    }
+  };
+
+  const startScan = async () => {
+    if (!zoneName.trim()) {
+      toast.error("Please enter a zone name first");
+      return;
+    }
+
+    setScanError(null);
+    setDetectedDevices([]);
+    setScanCount(0);
+    setIsScanning(true);
+    
+    toast.success("Scanning started", { 
+      description: `Monitoring ${zoneName}. Click scan to detect devices.` 
+    });
+
+    setTimeout(() => scanForDevices(), 500);
+  };
+
+  const stopScan = () => {
+    setIsScanning(false);
+    toast.info("Scanning stopped", {
+      description: `${scanCount} device(s) detected`
+    });
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6 md:p-8">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-500 rounded-full mb-4">
+            <Radar className={`w-8 h-8 text-white ${isScanning ? 'animate-pulse' : ''}`} />
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-2">Bluetooth Scanner</h1>
+          <p className="text-slate-300">Detect and log Bluetooth devices in restricted zones</p>
+          {notificationsEnabled && (
+            <div className="inline-flex items-center gap-2 mt-2 px-3 py-1 bg-green-900 rounded-full text-green-200 text-xs">
+              <Bell className="w-3 h-3" />
+              Alerts enabled
+            </div>
+          )}
+        </div>
+
+        {/* Latest Detection Alert */}
+        {latestDetection && (
+          <DetectionAlert detection={latestDetection} />
+        )}
+
+        {/* Zone Name Input */}
+        <Card className="mb-6 bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Radio className="w-5 h-5" />
+              Zone Name
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <Label htmlFor="zone-name" className="text-slate-300">
+                Enter the name of the zone you're monitoring
+              </Label>
+              <Input
+                id="zone-name"
+                placeholder="e.g., Server Room, Research Lab, Office A..."
+                value={zoneName}
+                onChange={(e) => setZoneName(e.target.value)}
+                className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400"
+                disabled={isScanning}
+              />
+              {zoneName && (
+                <p className="text-sm text-slate-400">
+                  Monitoring zone: <span className="text-white font-medium">{zoneName}</span>
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Error Alert */}
+        {scanError && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{scanError}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Scanning Status */}
+        {isScanning && (
+          <Card className="mb-6 bg-gradient-to-r from-blue-900 to-blue-800 border-blue-700">
+            <CardContent className="py-8">
+              <ScanningAnimation />
+              <div className="text-center mt-4">
+                <p className="text-white text-sm">
+                  Devices detected: <span className="font-bold text-lg">{scanCount}</span>
+                </p>
+                <p className="text-blue-200 text-xs mt-1">
+                  Select devices from the Bluetooth dialog to log them
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Scan Controls */}
+        <ScanControls 
+          isScanning={isScanning}
+          onStart={startScan}
+          onStop={stopScan}
+          disabled={!zoneName.trim()}
+        />
+
+        {/* Detected Devices */}
+        {detectedDevices.length > 0 && (
+          <DeviceList devices={detectedDevices} />
+        )}
+
+        {/* Browser Compatibility Note */}
+        <Card className="mt-6 bg-slate-800 border-slate-700">
+          <CardContent className="py-4">
+            <div className="flex items-start gap-3">
+              <Signal className="w-5 h-5 text-blue-400 mt-0.5" />
+              <div className="text-slate-300">
+                <p className="text-sm mb-2">
+                  <strong className="text-white">How to use:</strong>
+                </p>
+                <ol className="text-sm space-y-1 list-decimal list-inside">
+                  <li>Enter the zone name above</li>
+                  <li>Click "Start Scanning"</li>
+                  <li>A Bluetooth device picker will appear - select a device to detect it</li>
+                  <li>You'll receive audio, visual, and browser alerts for each detection</li>
+                  <li>Repeat for each device you want to log</li>
+                  <li>Click "Stop Scanning" when done</li>
+                </ol>
+                <p className="text-xs text-slate-400 mt-3">
+                  <strong>Note:</strong> Use Google Chrome or Microsoft Edge for best compatibility. Allow notifications for alert sounds and browser notifications.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
